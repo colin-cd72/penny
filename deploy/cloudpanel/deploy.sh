@@ -68,13 +68,17 @@ fi
 # Install TimescaleDB if not already installed
 if ! dpkg -l | grep -q timescaledb; then
     echo_info "Installing TimescaleDB..."
+    # Detect PostgreSQL version
+    PG_VERSION=$(psql --version | grep -oP '\d+' | head -1)
+    echo_info "Detected PostgreSQL version: ${PG_VERSION}"
+
     apt-get install -y gnupg postgresql-common apt-transport-https lsb-release wget
     echo "deb https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -c -s) main" | tee /etc/apt/sources.list.d/timescaledb.list
     wget --quiet -O - https://packagecloud.io/timescale/timescaledb/gpgkey | apt-key add -
     apt-get update
-    apt-get install -y timescaledb-2-postgresql-14
-    timescaledb-tune --quiet --yes
-    systemctl restart postgresql
+    apt-get install -y timescaledb-2-postgresql-${PG_VERSION} || echo_warn "TimescaleDB installation failed - continuing without it"
+    timescaledb-tune --quiet --yes || true
+    systemctl restart postgresql || true
 fi
 
 # Check if application directory exists
