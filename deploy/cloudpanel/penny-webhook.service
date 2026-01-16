@@ -1,0 +1,21 @@
+[Unit]
+Description=Penny Stock Picker GitHub Webhook Handler
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/home/penny/htdocs/penny.co-l.in/deploy/cloudpanel
+Environment="PATH=/home/penny/htdocs/penny.co-l.in/backend/venv/bin"
+Environment="GITHUB_WEBHOOK_SECRET=change-this-to-your-secret"
+ExecStart=/home/penny/htdocs/penny.co-l.in/backend/venv/bin/python webhook.py
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=append:/var/log/penny/webhook.log
+StandardError=append:/var/log/penny/webhook-error.log
+
+[Install]
+WantedBy=multi-user.target
