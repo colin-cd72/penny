@@ -1,0 +1,25 @@
+[Unit]
+Description=Penny Stock Picker API
+After=network.target postgresql.service redis.service
+
+[Service]
+Type=simple
+User=penny
+Group=penny
+WorkingDirectory=/home/penny/htdocs/penny.co-l.in/backend
+Environment="PATH=/home/penny/htdocs/penny.co-l.in/backend/venv/bin"
+EnvironmentFile=/home/penny/htdocs/penny.co-l.in/backend/.env
+ExecStart=/home/penny/htdocs/penny.co-l.in/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
+Restart=always
+RestartSec=5
+
+# Logging
+StandardOutput=append:/var/log/penny/api.log
+StandardError=append:/var/log/penny/api-error.log
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

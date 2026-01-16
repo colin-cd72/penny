@@ -1,0 +1,25 @@
+[Unit]
+Description=Penny Stock Picker Celery Worker
+After=network.target postgresql.service redis.service penny-api.service
+
+[Service]
+Type=simple
+User=penny
+Group=penny
+WorkingDirectory=/home/penny/htdocs/penny.co-l.in/backend
+Environment="PATH=/home/penny/htdocs/penny.co-l.in/backend/venv/bin"
+EnvironmentFile=/home/penny/htdocs/penny.co-l.in/backend/.env
+ExecStart=/home/penny/htdocs/penny.co-l.in/backend/venv/bin/celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=append:/var/log/penny/celery.log
+StandardError=append:/var/log/penny/celery-error.log
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

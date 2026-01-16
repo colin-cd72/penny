@@ -1,0 +1,25 @@
+[Unit]
+Description=Penny Stock Picker Celery Beat Scheduler
+After=network.target postgresql.service redis.service penny-api.service
+
+[Service]
+Type=simple
+User=penny
+Group=penny
+WorkingDirectory=/home/penny/htdocs/penny.co-l.in/backend
+Environment="PATH=/home/penny/htdocs/penny.co-l.in/backend/venv/bin"
+EnvironmentFile=/home/penny/htdocs/penny.co-l.in/backend/.env
+ExecStart=/home/penny/htdocs/penny.co-l.in/backend/venv/bin/celery -A app.workers.celery_app beat --loglevel=info
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=append:/var/log/penny/celery-beat.log
+StandardError=append:/var/log/penny/celery-beat-error.log
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
