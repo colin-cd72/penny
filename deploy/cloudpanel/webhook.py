@@ -54,7 +54,7 @@ async def github_webhook(
         if ref == "refs/heads/main":
             # Run deployment script in background
             subprocess.Popen(
-                ["bash", DEPLOY_SCRIPT],
+                ["/bin/bash", DEPLOY_SCRIPT],
                 stdout=open("/var/log/penny/webhook-deploy.log", "a"),
                 stderr=subprocess.STDOUT,
                 start_new_session=True
