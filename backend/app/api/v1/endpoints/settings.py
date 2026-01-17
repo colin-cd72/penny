@@ -716,20 +716,28 @@ async def _load_stocks_fallback(client: httpx.AsyncClient, api_key: str, user_id
     """Fallback method for free tier - use known penny stock symbols."""
     POLYGON_BASE_URL = "https://api.polygon.io"
 
-    # Common penny stock symbols to check
+    # Common penny stock symbols to check - expanded list
     known_symbols = [
-        "SNDL", "NAKD", "CTRM", "ZOM", "GNUS", "IDEX", "XSPA", "SHIP", "JAGX", "BNGO",
-        "OCGN", "SENS", "MVIS", "TXMD", "NNDM", "CTXR", "ASRT", "ATOS", "CLOV", "WISH",
-        "WKHS", "RIDE", "GOEV", "ARVL", "PSFE", "SOFI", "OPEN", "UWMC", "RKT", "PLTR",
-        "CRSR", "MGNI", "FUBO", "SKLZ", "DKNG", "PENN", "AFRM", "UPST", "COIN", "HOOD",
-        "MVST", "DCRC", "IONQ", "LILM", "JOBY", "GRAB", "BFLY", "TALK", "ARQQ", "DNA",
-        "IMPP", "MULN", "BBIG", "ATER", "PROG", "FAMI", "CENN", "GOVX", "COSM", "RELI",
-        "SRNE", "SAVA", "BNGO", "CLVS", "MNKD", "VXRT", "NVAX", "MRNA", "BNTX", "OCGN",
-        "BCRX", "INO", "CODX", "NRXP", "ONTX", "LPCN", "CPRX", "CRBP", "CLSD", "MDXH"
+        # Popular penny stocks
+        "SNDL", "CTRM", "ZOM", "GNUS", "IDEX", "XSPA", "SHIP", "JAGX", "BNGO",
+        "OCGN", "SENS", "MVIS", "TXMD", "NNDM", "CTXR", "ASRT", "ATOS",
+        # Biotech/Pharma penny stocks
+        "SRNE", "CLVS", "MNKD", "VXRT", "BCRX", "INO", "CODX", "ONTX", "LPCN",
+        "CPRX", "CRBP", "CLSD", "ADMA", "TRVN", "AGRX", "ATHX", "ADVM",
+        # EV/Tech penny stocks
+        "MULN", "GOEV", "RIDE", "ARVL", "NKLA", "WKHS", "SOLO", "AYRO",
+        # Mining/Energy
+        "GORO", "UUUU", "URG", "DNN", "UROY", "CCJ", "NXE",
+        # Recent SPACs/De-SPACs
+        "MVST", "IONQ", "JOBY", "GRAB", "BFLY", "DNA",
+        # Other volatile penny stocks
+        "IMPP", "BBIG", "ATER", "PROG", "FAMI", "CENN", "GOVX", "COSM", "RELI",
+        "VERB", "BKKT", "NRXP", "PRTY", "APRN", "BYND", "TLRY", "CGC", "ACB"
     ]
 
     penny_stocks = []
-    _load_stocks_status[user_id]["message"] = f"Checking {len(known_symbols)} known penny stock symbols..."
+    _load_stocks_status[user_id]["message"] = f"Free tier: Checking {len(known_symbols)} symbols (slow due to rate limits)..."
+    _load_stocks_status[user_id]["total_fetched"] = len(known_symbols)
 
     for i, symbol in enumerate(known_symbols):
         try:
@@ -741,7 +749,8 @@ async def _load_stocks_fallback(client: httpx.AsyncClient, api_key: str, user_id
                 results = data.get("results", [])
                 if results:
                     price = results[0].get("c")
-                    if price and 0.01 <= price <= 5.0:
+                    # Include all stocks under $10 to get more results
+                    if price and 0.001 <= price <= 10.0:
                         penny_stocks.append({
                             "symbol": symbol,
                             "current_price": price,
@@ -750,16 +759,21 @@ async def _load_stocks_fallback(client: httpx.AsyncClient, api_key: str, user_id
                             "day_low": results[0].get("l"),
                             "volume": results[0].get("v"),
                         })
-                        _load_stocks_status[user_id]["total_saved"] = len(penny_stocks)
+            elif response.status_code == 429:
+                # Rate limited - wait longer
+                _load_stocks_status[user_id]["message"] = f"Rate limited, waiting 60s... ({len(penny_stocks)} found)"
+                await asyncio.sleep(60)
+                continue
 
-            _load_stocks_status[user_id]["message"] = f"Checked {i+1}/{len(known_symbols)} symbols, found {len(penny_stocks)} penny stocks..."
+            _load_stocks_status[user_id]["message"] = f"Checked {i+1}/{len(known_symbols)}, found {len(penny_stocks)} stocks"
+            _load_stocks_status[user_id]["total_saved"] = len(penny_stocks)
 
-            # Polygon free tier: 5 requests/minute
-            if (i + 1) % 5 == 0:
-                _load_stocks_status[user_id]["message"] = f"Rate limit pause... ({len(penny_stocks)} found so far)"
-                await asyncio.sleep(62)  # Wait just over a minute
+            # Polygon free tier: 5 requests/minute - wait 12 seconds between each
+            await asyncio.sleep(12)
 
-        except Exception:
+        except Exception as e:
+            _load_stocks_status[user_id]["message"] = f"Error on {symbol}: {str(e)[:50]}"
+            await asyncio.sleep(12)
             continue
 
     return penny_stocks
