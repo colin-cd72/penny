@@ -25,7 +25,7 @@ class InsiderTransaction(Base):
     # Insider information
     insider_name = Column(String(255), nullable=False)
     insider_title = Column(String(100))
-    relationship = Column(String(50))  # Officer, Director, 10% Owner
+    insider_relationship = Column(String(50))  # Officer, Director, 10% Owner
 
     # Transaction details
     transaction_date = Column(Date, nullable=False, index=True)
