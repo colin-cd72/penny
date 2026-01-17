@@ -1,15 +1,16 @@
 """Settings API endpoints for managing API keys."""
 
+import asyncio
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import httpx
 
 from app.database import get_db
-from app.models import User, APIKeySettings
+from app.models import User, APIKeySettings, Stock
 from app.schemas.api_key import (
     APIKeyUpdate,
     APIKeyStatus,
@@ -509,3 +510,226 @@ async def test_smtp(settings: APIKeySettings, db: AsyncSession) -> APIKeyTestRes
             success=False,
             message=f"SMTP connection failed: {str(e)}",
         )
+
+
+# Stock loading status tracking
+_load_stocks_status = {}
+
+
+@router.post("/load-stocks")
+async def load_stocks(
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Start loading penny stocks from Polygon.io."""
+    settings = await get_or_create_settings(db, current_user)
+
+    if not settings.polygon_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Polygon API key not configured. Please add your API key first.",
+        )
+
+    user_id = str(current_user.id)
+
+    # Check if already loading
+    if user_id in _load_stocks_status and _load_stocks_status[user_id].get("status") == "loading":
+        return {
+            "status": "loading",
+            "message": "Stock loading already in progress",
+            "progress": _load_stocks_status[user_id],
+        }
+
+    # Initialize status
+    _load_stocks_status[user_id] = {
+        "status": "loading",
+        "started_at": datetime.utcnow().isoformat(),
+        "total_fetched": 0,
+        "total_saved": 0,
+        "current_page": 0,
+        "message": "Starting...",
+    }
+
+    # Start background task
+    background_tasks.add_task(
+        _load_stocks_background,
+        settings.polygon_api_key,
+        user_id,
+    )
+
+    return {
+        "status": "started",
+        "message": "Stock loading started. Check progress with GET /settings/load-stocks/status",
+    }
+
+
+@router.get("/load-stocks/status")
+async def get_load_stocks_status(
+    current_user: User = Depends(get_current_user),
+):
+    """Get the status of stock loading."""
+    user_id = str(current_user.id)
+
+    if user_id not in _load_stocks_status:
+        return {
+            "status": "idle",
+            "message": "No loading in progress",
+        }
+
+    return _load_stocks_status[user_id]
+
+
+async def _load_stocks_background(api_key: str, user_id: str):
+    """Background task to load stocks from Polygon."""
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import settings as app_settings
+
+    POLYGON_BASE_URL = "https://api.polygon.io"
+
+    try:
+        # Create new database session for background task
+        engine = create_async_engine(str(app_settings.database_url))
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        tickers = []
+        next_url = f"{POLYGON_BASE_URL}/v3/reference/tickers?market=stocks&active=true&limit=1000&apiKey={api_key}"
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            page = 0
+            max_pages = 20  # Limit pages to avoid rate limits
+
+            while next_url and page < max_pages:
+                page += 1
+                _load_stocks_status[user_id]["current_page"] = page
+                _load_stocks_status[user_id]["message"] = f"Fetching page {page}..."
+
+                try:
+                    response = await client.get(next_url)
+                    response.raise_for_status()
+                    data = response.json()
+
+                    for ticker in data.get("results", []):
+                        symbol = ticker.get("ticker", "")
+                        # Filter: skip long symbols, special characters
+                        if not symbol or len(symbol) > 5:
+                            continue
+                        if any(c in symbol for c in ['.', '-', '/']):
+                            continue
+
+                        tickers.append({
+                            "symbol": symbol,
+                            "name": ticker.get("name"),
+                            "exchange": ticker.get("primary_exchange"),
+                            "market_tier": ticker.get("market", ""),
+                            "cik": ticker.get("cik"),
+                        })
+
+                    _load_stocks_status[user_id]["total_fetched"] = len(tickers)
+
+                    # Get next page URL
+                    next_url = data.get("next_url")
+                    if next_url:
+                        next_url = f"{next_url}&apiKey={api_key}"
+
+                    # Rate limiting
+                    await asyncio.sleep(0.3)
+
+                except httpx.HTTPStatusError as e:
+                    _load_stocks_status[user_id]["message"] = f"HTTP error on page {page}: {e}"
+                    break
+                except Exception as e:
+                    _load_stocks_status[user_id]["message"] = f"Error on page {page}: {e}"
+                    break
+
+        _load_stocks_status[user_id]["message"] = f"Fetched {len(tickers)} tickers. Getting prices..."
+
+        # Now fetch prices for tickers to find penny stocks
+        penny_stocks = []
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for i, ticker in enumerate(tickers):
+                if len(penny_stocks) >= 500:  # Limit for free tier
+                    break
+
+                symbol = ticker["symbol"]
+
+                try:
+                    url = f"{POLYGON_BASE_URL}/v2/aggs/ticker/{symbol}/prev?apiKey={api_key}"
+                    response = await client.get(url)
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        results = data.get("results", [])
+                        if results:
+                            price = results[0].get("c")  # close price
+                            if price and 0.01 <= price <= 5.0:
+                                ticker["current_price"] = price
+                                ticker["previous_close"] = results[0].get("o")
+                                ticker["day_high"] = results[0].get("h")
+                                ticker["day_low"] = results[0].get("l")
+                                ticker["volume"] = results[0].get("v")
+                                penny_stocks.append(ticker)
+
+                                _load_stocks_status[user_id]["message"] = f"Found {len(penny_stocks)} penny stocks..."
+
+                    # Rate limiting - 5 requests per second
+                    if i % 5 == 0:
+                        await asyncio.sleep(1)
+
+                except Exception:
+                    continue
+
+        _load_stocks_status[user_id]["message"] = f"Saving {len(penny_stocks)} penny stocks to database..."
+
+        # Save to database
+        async with async_session() as session:
+            added = 0
+            updated = 0
+
+            for stock_data in penny_stocks:
+                result = await session.execute(
+                    select(Stock).where(Stock.symbol == stock_data["symbol"])
+                )
+                existing = result.scalar_one_or_none()
+
+                if existing:
+                    existing.current_price = stock_data.get("current_price")
+                    existing.previous_close = stock_data.get("previous_close")
+                    existing.day_high = stock_data.get("day_high")
+                    existing.day_low = stock_data.get("day_low")
+                    existing.volume = stock_data.get("volume")
+                    existing.last_updated = datetime.utcnow()
+                    updated += 1
+                else:
+                    stock = Stock(
+                        symbol=stock_data["symbol"],
+                        name=stock_data.get("name"),
+                        exchange=stock_data.get("exchange"),
+                        market_tier=stock_data.get("market_tier"),
+                        cik=stock_data.get("cik"),
+                        current_price=stock_data.get("current_price"),
+                        previous_close=stock_data.get("previous_close"),
+                        day_high=stock_data.get("day_high"),
+                        day_low=stock_data.get("day_low"),
+                        volume=stock_data.get("volume"),
+                        is_active=True,
+                        is_penny_stock=True,
+                        last_updated=datetime.utcnow(),
+                    )
+                    session.add(stock)
+                    added += 1
+
+            await session.commit()
+            _load_stocks_status[user_id]["total_saved"] = added + updated
+
+        _load_stocks_status[user_id]["status"] = "completed"
+        _load_stocks_status[user_id]["message"] = f"Done! Added {added} new stocks, updated {updated} existing."
+        _load_stocks_status[user_id]["completed_at"] = datetime.utcnow().isoformat()
+
+        await engine.dispose()
+
+    except Exception as e:
+        _load_stocks_status[user_id]["status"] = "error"
+        _load_stocks_status[user_id]["message"] = f"Error: {str(e)}"

@@ -1,6 +1,14 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getAPIKeyStatus, updateAPIKeys, testAPIKey, APIKeyUpdate } from '@/api/settings'
+import {
+  getAPIKeyStatus,
+  updateAPIKeys,
+  testAPIKey,
+  startLoadStocks,
+  getLoadStocksStatus,
+  APIKeyUpdate,
+  LoadStocksStatus,
+} from '@/api/settings'
 import { cn } from '@/lib/utils'
 import {
   CheckCircle,
@@ -10,6 +18,8 @@ import {
   EyeOff,
   TestTube,
   Save,
+  Download,
+  Database,
 } from 'lucide-react'
 
 interface APIKeyInputProps {
@@ -125,11 +135,39 @@ export default function Settings() {
   const [formData, setFormData] = useState<APIKeyUpdate>({})
   const [testingService, setTestingService] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<{ service: string; message: string; success: boolean } | null>(null)
+  const [loadStocksStatus, setLoadStocksStatus] = useState<LoadStocksStatus | null>(null)
+  const [isPollingStatus, setIsPollingStatus] = useState(false)
 
   const { data: status, isLoading } = useQuery({
     queryKey: ['api-key-status'],
     queryFn: getAPIKeyStatus,
   })
+
+  // Poll load stocks status while loading
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null
+
+    if (isPollingStatus) {
+      interval = setInterval(async () => {
+        try {
+          const status = await getLoadStocksStatus()
+          setLoadStocksStatus(status)
+
+          if (status.status === 'completed' || status.status === 'error' || status.status === 'idle') {
+            setIsPollingStatus(false)
+            // Invalidate stocks query to refresh dashboard
+            queryClient.invalidateQueries({ queryKey: ['stocks'] })
+          }
+        } catch (error) {
+          console.error('Failed to get load status:', error)
+        }
+      }, 2000)
+    }
+
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [isPollingStatus, queryClient])
 
   const updateMutation = useMutation({
     mutationFn: updateAPIKeys,
@@ -154,6 +192,21 @@ export default function Settings() {
     setTestingService(service)
     setTestResult(null)
     testMutation.mutate(service)
+  }
+
+  const loadStocksMutation = useMutation({
+    mutationFn: startLoadStocks,
+    onSuccess: (result) => {
+      setLoadStocksStatus(result)
+      if (result.status === 'started' || result.status === 'loading') {
+        setIsPollingStatus(true)
+      }
+    },
+  })
+
+  const handleLoadStocks = () => {
+    setLoadStocksStatus(null)
+    loadStocksMutation.mutate()
   }
 
   const handleSave = () => {
@@ -248,6 +301,116 @@ export default function Settings() {
           isTesting={testingService === 'benzinga'}
           placeholder="Enter Benzinga API key"
         />
+      </section>
+
+      {/* Load Stocks */}
+      <section className="space-y-4">
+        <h2 className="text-lg font-semibold border-b pb-2">Stock Data</h2>
+
+        <div className="border rounded-lg p-4 space-y-4">
+          <div className="flex items-start justify-between">
+            <div>
+              <h3 className="font-medium flex items-center gap-2">
+                <Database className="h-5 w-5" />
+                Load Penny Stocks
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                Fetch penny stocks (under $5) from Polygon.io and save to database.
+                Requires a configured Polygon API key.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <button
+              onClick={handleLoadStocks}
+              disabled={
+                !status?.polygon.configured ||
+                loadStocksMutation.isPending ||
+                loadStocksStatus?.status === 'loading'
+              }
+              className={cn(
+                'px-4 py-2 rounded-md flex items-center gap-2 font-medium',
+                'bg-primary text-primary-foreground hover:bg-primary/90',
+                'disabled:opacity-50 disabled:cursor-not-allowed'
+              )}
+            >
+              {loadStocksMutation.isPending || loadStocksStatus?.status === 'loading' ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4" />
+              )}
+              {loadStocksStatus?.status === 'loading' ? 'Loading...' : 'Load Stocks'}
+            </button>
+
+            {!status?.polygon.configured && (
+              <span className="text-sm text-muted-foreground">
+                Configure Polygon API key first
+              </span>
+            )}
+          </div>
+
+          {/* Progress Display */}
+          {loadStocksStatus && (
+            <div
+              className={cn(
+                'p-4 rounded-lg space-y-2',
+                loadStocksStatus.status === 'completed'
+                  ? 'bg-green-500/10'
+                  : loadStocksStatus.status === 'error'
+                  ? 'bg-red-500/10'
+                  : 'bg-blue-500/10'
+              )}
+            >
+              <div className="flex items-center gap-2">
+                {loadStocksStatus.status === 'loading' && (
+                  <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                )}
+                {loadStocksStatus.status === 'completed' && (
+                  <CheckCircle className="h-4 w-4 text-green-500" />
+                )}
+                {loadStocksStatus.status === 'error' && (
+                  <XCircle className="h-4 w-4 text-red-500" />
+                )}
+                <span
+                  className={cn(
+                    'font-medium',
+                    loadStocksStatus.status === 'completed'
+                      ? 'text-green-500'
+                      : loadStocksStatus.status === 'error'
+                      ? 'text-red-500'
+                      : 'text-blue-500'
+                  )}
+                >
+                  {loadStocksStatus.message}
+                </span>
+              </div>
+
+              {loadStocksStatus.status === 'loading' && (
+                <div className="grid grid-cols-3 gap-4 text-sm">
+                  <div>
+                    <span className="text-muted-foreground">Page:</span>{' '}
+                    <span className="font-mono">{loadStocksStatus.current_page || 0}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Tickers:</span>{' '}
+                    <span className="font-mono">{loadStocksStatus.total_fetched || 0}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Penny Stocks:</span>{' '}
+                    <span className="font-mono">{loadStocksStatus.total_saved || 0}</span>
+                  </div>
+                </div>
+              )}
+
+              {loadStocksStatus.status === 'completed' && loadStocksStatus.total_saved && (
+                <p className="text-sm text-muted-foreground">
+                  Loaded {loadStocksStatus.total_saved} penny stocks. Go to Dashboard to view them.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
       </section>
 
       {/* Trading */}

@@ -68,3 +68,23 @@ export async function testAPIKey(service: string): Promise<APIKeyTestResponse> {
   })
   return response.data
 }
+
+export interface LoadStocksStatus {
+  status: 'idle' | 'loading' | 'started' | 'completed' | 'error'
+  message: string
+  total_fetched?: number
+  total_saved?: number
+  current_page?: number
+  started_at?: string
+  completed_at?: string
+}
+
+export async function startLoadStocks(): Promise<LoadStocksStatus> {
+  const response = await apiClient.post<LoadStocksStatus>('/settings/load-stocks')
+  return response.data
+}
+
+export async function getLoadStocksStatus(): Promise<LoadStocksStatus> {
+  const response = await apiClient.get<LoadStocksStatus>('/settings/load-stocks/status')
+  return response.data
+}
