@@ -585,6 +585,7 @@ async def _load_stocks_background(api_key: str, user_id: str):
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
     from sqlalchemy.orm import sessionmaker
     from app.config import settings as app_settings
+    from datetime import date, timedelta
 
     POLYGON_BASE_URL = "https://api.polygon.io"
 
@@ -593,93 +594,69 @@ async def _load_stocks_background(api_key: str, user_id: str):
         engine = create_async_engine(str(app_settings.database_url))
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-        tickers = []
-        next_url = f"{POLYGON_BASE_URL}/v3/reference/tickers?market=stocks&active=true&limit=1000&apiKey={api_key}"
+        _load_stocks_status[user_id]["message"] = "Fetching all stock prices (this may take a moment)..."
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            page = 0
-            max_pages = 20  # Limit pages to avoid rate limits
-
-            while next_url and page < max_pages:
-                page += 1
-                _load_stocks_status[user_id]["current_page"] = page
-                _load_stocks_status[user_id]["message"] = f"Fetching page {page}..."
-
-                try:
-                    response = await client.get(next_url)
-                    response.raise_for_status()
-                    data = response.json()
-
-                    for ticker in data.get("results", []):
-                        symbol = ticker.get("ticker", "")
-                        # Filter: skip long symbols, special characters
-                        if not symbol or len(symbol) > 5:
-                            continue
-                        if any(c in symbol for c in ['.', '-', '/']):
-                            continue
-
-                        tickers.append({
-                            "symbol": symbol,
-                            "name": ticker.get("name"),
-                            "exchange": ticker.get("primary_exchange"),
-                            "market_tier": ticker.get("market", ""),
-                            "cik": ticker.get("cik"),
-                        })
-
-                    _load_stocks_status[user_id]["total_fetched"] = len(tickers)
-
-                    # Get next page URL
-                    next_url = data.get("next_url")
-                    if next_url:
-                        next_url = f"{next_url}&apiKey={api_key}"
-
-                    # Rate limiting
-                    await asyncio.sleep(0.3)
-
-                except httpx.HTTPStatusError as e:
-                    _load_stocks_status[user_id]["message"] = f"HTTP error on page {page}: {e}"
-                    break
-                except Exception as e:
-                    _load_stocks_status[user_id]["message"] = f"Error on page {page}: {e}"
-                    break
-
-        _load_stocks_status[user_id]["message"] = f"Fetched {len(tickers)} tickers. Getting prices..."
-
-        # Now fetch prices for tickers to find penny stocks
+        # Use grouped daily endpoint - gets ALL stocks in one call
+        # Try yesterday first, then day before if market was closed
         penny_stocks = []
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            for i, ticker in enumerate(tickers):
-                if len(penny_stocks) >= 500:  # Limit for free tier
-                    break
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            for days_back in range(1, 5):  # Try last 4 days
+                check_date = (date.today() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+                _load_stocks_status[user_id]["message"] = f"Fetching prices for {check_date}..."
 
-                symbol = ticker["symbol"]
+                url = f"{POLYGON_BASE_URL}/v2/aggs/grouped/locale/us/market/stocks/{check_date}?apiKey={api_key}"
 
                 try:
-                    url = f"{POLYGON_BASE_URL}/v2/aggs/ticker/{symbol}/prev?apiKey={api_key}"
                     response = await client.get(url)
 
                     if response.status_code == 200:
                         data = response.json()
                         results = data.get("results", [])
+
                         if results:
-                            price = results[0].get("c")  # close price
-                            if price and 0.01 <= price <= 5.0:
-                                ticker["current_price"] = price
-                                ticker["previous_close"] = results[0].get("o")
-                                ticker["day_high"] = results[0].get("h")
-                                ticker["day_low"] = results[0].get("l")
-                                ticker["volume"] = results[0].get("v")
-                                penny_stocks.append(ticker)
+                            _load_stocks_status[user_id]["total_fetched"] = len(results)
+                            _load_stocks_status[user_id]["message"] = f"Processing {len(results)} stocks..."
 
-                                _load_stocks_status[user_id]["message"] = f"Found {len(penny_stocks)} penny stocks..."
+                            # Filter for penny stocks
+                            for stock in results:
+                                symbol = stock.get("T", "")
+                                price = stock.get("c")  # close price
 
-                    # Rate limiting - 5 requests per second
-                    if i % 5 == 0:
-                        await asyncio.sleep(1)
+                                # Skip invalid symbols
+                                if not symbol or len(symbol) > 5:
+                                    continue
+                                if any(c in symbol for c in ['.', '-', '/']):
+                                    continue
 
-                except Exception:
+                                # Filter for penny stocks (under $5)
+                                if price and 0.01 <= price <= 5.0:
+                                    penny_stocks.append({
+                                        "symbol": symbol,
+                                        "current_price": price,
+                                        "previous_close": stock.get("o"),
+                                        "day_high": stock.get("h"),
+                                        "day_low": stock.get("l"),
+                                        "volume": stock.get("v"),
+                                    })
+
+                            _load_stocks_status[user_id]["message"] = f"Found {len(penny_stocks)} penny stocks under $5"
+                            break  # Got data, exit loop
+
+                    elif response.status_code == 403:
+                        _load_stocks_status[user_id]["message"] = "API error: Grouped endpoint requires paid plan. Trying alternative..."
+                        # Fall back to ticker-by-ticker method but with known penny stock symbols
+                        penny_stocks = await _load_stocks_fallback(client, api_key, user_id)
+                        break
+
+                except Exception as e:
+                    _load_stocks_status[user_id]["message"] = f"Error fetching {check_date}: {e}"
                     continue
+
+        if not penny_stocks:
+            _load_stocks_status[user_id]["status"] = "error"
+            _load_stocks_status[user_id]["message"] = "No penny stocks found. Check your API plan."
+            return
 
         _load_stocks_status[user_id]["message"] = f"Saving {len(penny_stocks)} penny stocks to database..."
 
@@ -733,3 +710,56 @@ async def _load_stocks_background(api_key: str, user_id: str):
     except Exception as e:
         _load_stocks_status[user_id]["status"] = "error"
         _load_stocks_status[user_id]["message"] = f"Error: {str(e)}"
+
+
+async def _load_stocks_fallback(client: httpx.AsyncClient, api_key: str, user_id: str) -> list:
+    """Fallback method for free tier - use known penny stock symbols."""
+    POLYGON_BASE_URL = "https://api.polygon.io"
+
+    # Common penny stock symbols to check
+    known_symbols = [
+        "SNDL", "NAKD", "CTRM", "ZOM", "GNUS", "IDEX", "XSPA", "SHIP", "JAGX", "BNGO",
+        "OCGN", "SENS", "MVIS", "TXMD", "NNDM", "CTXR", "ASRT", "ATOS", "CLOV", "WISH",
+        "WKHS", "RIDE", "GOEV", "ARVL", "PSFE", "SOFI", "OPEN", "UWMC", "RKT", "PLTR",
+        "CRSR", "MGNI", "FUBO", "SKLZ", "DKNG", "PENN", "AFRM", "UPST", "COIN", "HOOD",
+        "MVST", "DCRC", "IONQ", "LILM", "JOBY", "GRAB", "BFLY", "TALK", "ARQQ", "DNA",
+        "IMPP", "MULN", "BBIG", "ATER", "PROG", "FAMI", "CENN", "GOVX", "COSM", "RELI",
+        "SRNE", "SAVA", "BNGO", "CLVS", "MNKD", "VXRT", "NVAX", "MRNA", "BNTX", "OCGN",
+        "BCRX", "INO", "CODX", "NRXP", "ONTX", "LPCN", "CPRX", "CRBP", "CLSD", "MDXH"
+    ]
+
+    penny_stocks = []
+    _load_stocks_status[user_id]["message"] = f"Checking {len(known_symbols)} known penny stock symbols..."
+
+    for i, symbol in enumerate(known_symbols):
+        try:
+            url = f"{POLYGON_BASE_URL}/v2/aggs/ticker/{symbol}/prev?apiKey={api_key}"
+            response = await client.get(url)
+
+            if response.status_code == 200:
+                data = response.json()
+                results = data.get("results", [])
+                if results:
+                    price = results[0].get("c")
+                    if price and 0.01 <= price <= 5.0:
+                        penny_stocks.append({
+                            "symbol": symbol,
+                            "current_price": price,
+                            "previous_close": results[0].get("o"),
+                            "day_high": results[0].get("h"),
+                            "day_low": results[0].get("l"),
+                            "volume": results[0].get("v"),
+                        })
+                        _load_stocks_status[user_id]["total_saved"] = len(penny_stocks)
+
+            _load_stocks_status[user_id]["message"] = f"Checked {i+1}/{len(known_symbols)} symbols, found {len(penny_stocks)} penny stocks..."
+
+            # Polygon free tier: 5 requests/minute
+            if (i + 1) % 5 == 0:
+                _load_stocks_status[user_id]["message"] = f"Rate limit pause... ({len(penny_stocks)} found so far)"
+                await asyncio.sleep(62)  # Wait just over a minute
+
+        except Exception:
+            continue
+
+    return penny_stocks
