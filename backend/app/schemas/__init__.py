@@ -36,6 +36,13 @@ from app.schemas.alert import (
     AlertConfigUpdate,
     AlertConfigResponse,
 )
+from app.schemas.api_key import (
+    APIKeyUpdate,
+    APIKeyStatus,
+    APIKeyStatusResponse,
+    APIKeyTestRequest,
+    APIKeyTestResponse,
+)
 
 __all__ = [
     "UserCreate",
@@ -62,4 +69,9 @@ __all__ = [
     "AlertConfigCreate",
     "AlertConfigUpdate",
     "AlertConfigResponse",
+    "APIKeyUpdate",
+    "APIKeyStatus",
+    "APIKeyStatusResponse",
+    "APIKeyTestRequest",
+    "APIKeyTestResponse",
 ]

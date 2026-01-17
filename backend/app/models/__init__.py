@@ -10,6 +10,7 @@ from app.models.broker_account import BrokerAccount
 from app.models.price_history import PriceHistory
 from app.models.news import NewsArticle
 from app.models.insider import InsiderTransaction
+from app.models.api_key import APIKeySettings
 
 __all__ = [
     "User",
@@ -28,4 +29,5 @@ __all__ = [
     "PriceHistory",
     "NewsArticle",
     "InsiderTransaction",
+    "APIKeySettings",
 ]

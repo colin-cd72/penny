@@ -44,6 +44,7 @@ class User(Base):
     broker_accounts = relationship("BrokerAccount", back_populates="user", cascade="all, delete-orphan")
     trades = relationship("Trade", back_populates="user")
     alert_configs = relationship("AlertConfig", back_populates="user", cascade="all, delete-orphan")
+    api_key_settings = relationship("APIKeySettings", back_populates="user", uselist=False, cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User {self.email}>"

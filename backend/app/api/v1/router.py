@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, stocks, recommendations, trades, alerts, watchlists, portfolio
+from app.api.v1.endpoints import auth, stocks, recommendations, trades, alerts, watchlists, portfolio, settings
 from app.api.v1 import websocket
 
 api_router = APIRouter()
@@ -15,6 +15,7 @@ api_router.include_router(watchlists.router, prefix="/watchlists", tags=["Watchl
 api_router.include_router(trades.router, prefix="/trades", tags=["Trades"])
 api_router.include_router(alerts.router, prefix="/alerts", tags=["Alerts"])
 api_router.include_router(portfolio.router, prefix="/portfolio", tags=["Portfolio"])
+api_router.include_router(settings.router, prefix="/settings", tags=["Settings"])
 
 # WebSocket endpoint
 api_router.include_router(websocket.router, tags=["WebSocket"])
