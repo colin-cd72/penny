@@ -145,7 +145,7 @@ export default function Settings() {
 
   // Poll load stocks status while loading
   useEffect(() => {
-    let interval: NodeJS.Timeout | null = null
+    let interval: ReturnType<typeof setInterval> | null = null
 
     if (isPollingStatus) {
       interval = setInterval(async () => {
