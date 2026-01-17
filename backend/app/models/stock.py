@@ -52,8 +52,8 @@ class Stock(Base):
     is_active = Column(Boolean, default=True)
     is_penny_stock = Column(Boolean, default=True)
 
-    # Metadata
-    metadata = Column(JSONB, default=dict)
+    # Extra data
+    extra_data = Column(JSONB, default=dict)
 
     last_updated = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
